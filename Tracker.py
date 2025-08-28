@@ -66,7 +66,7 @@ def get_token_balances(token_accounts):
             nfts.append({"mint": mint})
     return balances, nfts
 
-def get_recent_transactions(address, limit=25):
+def get_recent_transactions(address, limit=10):
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -160,8 +160,9 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
             st.table(nft_df)
         
         txs_data = []
+        tx_placeholder = st.empty()
         if txs:
-            st.subheader("Recent Transactions (Last 25):")
+            st.subheader("Recent Transactions (Last 10):")
             change_list = []
             for i, tx in enumerate(txs):
                 parsed = parse_transaction(tx['signature'], wallet_input)
@@ -173,7 +174,7 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
                         change['date'] = parsed['date']
                         change['signature'] = parsed['signature']
                         change_list.append(change)
-                    st.table(pd.DataFrame(change_list)[["number", "date", "signature", "mint", "amount", "decimals"]])
+                    tx_placeholder.table(pd.DataFrame(change_list)[["number", "date", "signature", "mint", "amount", "decimals"]])
                 time.sleep(5)  # Delay for rate limits
         
         save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
