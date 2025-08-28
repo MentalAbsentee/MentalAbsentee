@@ -9,7 +9,7 @@ from datetime import datetime
 # Configuration
 WALLET_ADDRESS = ""
 RPC_URL = "https://api.mainnet-beta.solana.com"
-PROXY_LIST_URL = "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=elite,anonymous"
+PROXY_LIST_URL = "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
 OUTPUT_FILE = "wallet_history.txt"
 CHECK_INTERVAL = 60
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
