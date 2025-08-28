@@ -5,7 +5,6 @@ import time
 import random
 import pandas as pd
 from datetime import datetime
-from bs4 import BeautifulSoup
 
 # Configuration
 WALLET_ADDRESS = ""  # No default wallet; user inputs via UI
@@ -18,19 +17,13 @@ def fetch_proxy_list():
     try:
         response = requests.get(PROXY_LIST_URL, timeout=10)
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        table = soup.find('table', id='proxylisttable')
         proxies = []
-        if table:
-            rows = table.find_all('tr')
-            for row in rows[1:]:  # Skip header
-                tds = row.find_all('td')
-                if len(tds) > 4:
-                    ip = tds[0].text.strip()
-                    port = tds[1].text.strip()
-                    anonymity = tds[4].text.strip().lower()
-                    if "elite proxy" in anonymity or "anonymous" in anonymity:
-                        proxies.append(f"{ip}:{port}")
+        for line in response.text.splitlines():
+            if "elite proxy" in line or "anonymous" in line:
+                parts = line.split()
+                for part in parts:
+                    if ":" in part and part.replace(".", "").replace(":", "").isdigit():
+                        proxies.append(part)
         return proxies[:10]
     except requests.exceptions.RequestException as e:
         st.error(f"Failed to fetch proxies: {e}")
