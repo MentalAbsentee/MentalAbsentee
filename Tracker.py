@@ -7,25 +7,18 @@ import pandas as pd
 from datetime import datetime
 
 # Configuration
-WALLET_ADDRESS = ""  # No default wallet; user inputs via UI
+WALLET_ADDRESS = ""
 RPC_URL = "https://api.mainnet-beta.solana.com"
-PROXY_LIST_URL = "https://free-proxy-list.net/"  # Free proxy source
-OUTPUT_FILE = "wallet_history.txt"  # Log file
-CHECK_INTERVAL = 60  # Seconds between checks
+PROXY_LIST_URL = "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=elite,anonymous"
+OUTPUT_FILE = "wallet_history.txt"
+CHECK_INTERVAL = 60
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 def fetch_proxy_list():
     try:
         response = requests.get(PROXY_LIST_URL, timeout=10)
         response.raise_for_status()
-        proxies = []
-        for line in response.text.splitlines():
-            if "elite proxy" in line or "anonymous" in line:
-                parts = line.split()
-                for part in parts:
-                    if ":" in part and part.replace(".", "").replace(":", "").isdigit():
-                        proxies.append(part)
-        return proxies[:10]
+        return response.text.strip().split('\n')[:10]
     except requests.exceptions.RequestException as e:
         st.error(f"Failed to fetch proxies: {e}")
         return []
@@ -89,12 +82,13 @@ def get_token_balances(token_accounts):
         mint = info['mint']
         amount = info['tokenAmount']['uiAmount']
         decimals = info['tokenAmount']['decimals']
-        balances.append({"mint": mint, "amount": amount, "decimals": decimals})
+        if amount > 0:
+            balances.append({"mint": mint, "amount": amount, "decimals": decimals})
         if decimals == 0 and amount == 1:
             nfts.append({"mint": mint})
     return balances, nfts
 
-def get_recent_transactions(address, proxies_list, limit=5):
+def get_recent_transactions(address, proxies_list, limit=25):
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -106,7 +100,7 @@ def get_recent_transactions(address, proxies_list, limit=5):
         return data['result']
     return []
 
-def parse_transaction(signature, proxies_list):
+def parse_transaction(signature, proxies_list, wallet_address):
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -114,7 +108,7 @@ def parse_transaction(signature, proxies_list):
         "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
     }
     data = api_request(payload, proxies_list)
-    if not data or 'result' in data or not data['result']:
+    if not data or 'result' not in data or not data['result']:
         return None
 
     tx = data['result']
@@ -122,9 +116,23 @@ def parse_transaction(signature, proxies_list):
     date = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S") if timestamp else "N/A"
     
     transfer_info = {"type": "Unknown", "amount": 0, "recipient": "N/A"}
-    accounts = tx['transaction']['message']['accountKeys']
-    instructions = tx['transaction']['message']['instructions']
+    net_change_sol = 0
+    net_changes_token = {}  # mint: delta
+    if 'meta' in tx and 'preBalances' in tx['meta'] and 'postBalances' in tx['meta']:
+        accounts = tx['transaction']['message']['accountKeys']
+        wallet_index = next((i for i, acct in enumerate(accounts) if acct['pubkey'] == wallet_address), None)
+        if wallet_index is not None:
+            net_change_sol = (tx['meta']['postBalances'][wallet_index] - tx['meta']['preBalances'][wallet_index]) / 1_000_000_000
 
+    if 'meta' in tx and 'preTokenBalances' in tx['meta'] and 'postTokenBalances' in tx['meta']:
+        for pre, post in zip(tx['meta']['preTokenBalances'], tx['meta']['postTokenBalances']):
+            if pre['owner'] == wallet_address and post['owner'] == wallet_address:
+                mint = pre['mint']
+                delta = (post['uiTokenAmount']['uiAmount'] - pre['uiTokenAmount']['uiAmount'])
+                if delta != 0:
+                    net_changes_token[mint] = delta
+
+    instructions = tx['transaction']['message']['instructions']
     for instr in instructions:
         if 'parsed' in instr and instr['parsed']['type'] == 'transfer':
             info = instr['parsed']['info']
@@ -142,7 +150,7 @@ def parse_transaction(signature, proxies_list):
                 }
             break
     
-    return {"date": date, "signature": signature, **transfer_info}
+    return {"date": date, "signature": signature, **transfer_info, "net_change_sol": net_change_sol, "net_changes_token": net_changes_token}
 
 def save_to_file(balance, token_balances, nfts, txs_data, wallet):
     with open(OUTPUT_FILE, 'a') as f:
@@ -155,9 +163,12 @@ def save_to_file(balance, token_balances, nfts, txs_data, wallet):
         f.write("NFTs:\n")
         for nft in nfts:
             f.write(f"  - Mint: {nft['mint']}\n")
-        f.write("Parsed Transactions:\n")
+        f.write("Transactions:\n")
         for tx in txs_data:
-            f.write(f"  - {tx['date']}: {tx['type']}, Amount: {tx['amount']}, To: {tx['recipient']}\n")
+            f.write(f"  - {tx['date']}: {tx['type']}, Amount: {tx['amount']}, To: {tx['recipient']}, Net SOL Change: {tx['net_change_sol']}")
+            for mint, delta in tx['net_changes_token'].items():
+                f.write(f", Token {mint[:8]} Change: {delta}")
+            f.write("\n")
         f.write("\n")
 
 # Streamlit UI
@@ -185,7 +196,7 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
             st.success(f"**SOL Balance:** {balance:.9f} SOL")
         
         if token_balances:
-            st.subheader("Token Balances:")
+            st.subheader("Token Balances (Non-Zero):")
             tb_df = pd.DataFrame(token_balances)
             st.table(tb_df)
         
@@ -195,16 +206,18 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
             st.table(nft_df)
         
         if txs:
-            st.subheader("Recent Transactions:")
+            st.subheader("Recent Transactions (Last 25):")
             txs_data = []
             for tx in txs:
-                parsed = parse_transaction(tx['signature'], st.session_state.proxies_list)
+                parsed = parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input)
                 if parsed:
                     txs_data.append(parsed)
-            
+                time.sleep(1)  # Delay to avoid rate limits
+        
             if txs_data:
-                df = pd.DataFrame(txs_data, columns=["date", "type", "amount", "recipient", "signature"])
-                st.table(df[["date", "type", "amount", "recipient"]])
+                df = pd.DataFrame(txs_data)
+                df['net_changes_token_str'] = df['net_changes_token'].apply(lambda d: ', '.join([f"{k[:8]}: {v}" for k,v in d.items()]))
+                st.table(df[["date", "type", "amount", "recipient", "net_change_sol", "net_changes_token_str"]])
         
         save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
 
@@ -229,11 +242,12 @@ if st.checkbox("Auto-refresh every 60s", disabled=not wallet_input):
                 st.table(nft_df)
             
             if txs:
-                txs_data = [parse_transaction(tx['signature'], st.session_state.proxies_list) for tx in txs]
+                txs_data = [parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input) for tx in txs]
                 txs_data = [tx for tx in txs_data if tx]
                 if txs_data:
-                    df = pd.DataFrame(txs_data, columns=["date", "type", "amount", "recipient", "signature"])
-                    st.table(df[["date", "type", "amount", "recipient"]])
+                    df = pd.DataFrame(txs_data)
+                    df['net_changes_token_str'] = df['net_changes_token'].apply(lambda d: ', '.join([f"{k[:8]}: {v}" for k,v in d.items()]))
+                    st.table(df[["date", "type", "amount", "recipient", "net_change_sol", "net_changes_token_str"]])
                 save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
         time.sleep(CHECK_INTERVAL)
         st.rerun()
