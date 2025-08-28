@@ -2,66 +2,41 @@ import streamlit as st
 import requests
 import json
 import time
-import random
 import pandas as pd
 from datetime import datetime
 
 # Configuration
 WALLET_ADDRESS = ""
 RPC_URL = "https://api.mainnet-beta.solana.com"
-PROXY_LIST_URL = "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt"
 OUTPUT_FILE = "wallet_history.txt"
 CHECK_INTERVAL = 60
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
-def fetch_proxy_list():
-    try:
-        response = requests.get(PROXY_LIST_URL, timeout=10)
-        response.raise_for_status()
-        return response.text.strip().split('\n')[:20]
-    except requests.exceptions.RequestException as e:
-        st.error(f"Failed to fetch proxies: {e}")
-        return []
-
-def get_proxies(proxy):
-    if proxy:
-        return {"http": f"http://{proxy}", "https": f"http://{proxy}"}
-    return None
-
-def api_request(payload, proxies_list, retries=3):
-    valid_proxies = proxies_list.copy()
-    for attempt in range(retries):
-        if valid_proxies:
-            proxy = random.choice(valid_proxies)
-            proxies = get_proxies(proxy)
-            st.info(f"Trying proxy: {proxy}")
-        else:
-            proxies = None
-            st.warning("No valid proxies left—running direct.")
+def api_request(payload, retries=2):
+    for attempt in range(retries + 1):
         try:
-            response = requests.post(RPC_URL, json=payload, proxies=proxies, timeout=15)
+            response = requests.post(RPC_URL, json=payload, timeout=10)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
             st.warning(f"Request failed (attempt {attempt + 1}): {e}")
-            if proxies:
-                valid_proxies.remove(proxy)
-            time.sleep(3)
+            if attempt < retries:
+                time.sleep(2)
     return None
 
-def get_balance(address, proxies_list):
+def get_balance(address):
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "getBalance",
         "params": [address]
     }
-    data = api_request(payload, proxies_list)
+    data = api_request(payload)
     if data and 'result' in data:
         return data['result']['value'] / 1_000_000_000
     return None
 
-def get_token_accounts(address, proxies_list):
+def get_token_accounts(address):
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -72,7 +47,7 @@ def get_token_accounts(address, proxies_list):
             {"encoding": "jsonParsed"}
         ]
     }
-    data = api_request(payload, proxies_list)
+    data = api_request(payload)
     if data and 'result' in data:
         return data['result']['value']
     return []
@@ -91,26 +66,26 @@ def get_token_balances(token_accounts):
             nfts.append({"mint": mint})
     return balances, nfts
 
-def get_recent_transactions(address, proxies_list, limit=25):
+def get_recent_transactions(address, limit=25):
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "getSignaturesForAddress",
         "params": [address, {"limit": limit}]
     }
-    data = api_request(payload, proxies_list)
+    data = api_request(payload)
     if data and 'result' in data:
         return data['result']
     return []
 
-def parse_transaction(signature, proxies_list, wallet_address):
+def parse_transaction(signature, wallet_address):
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "getTransaction",
         "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
     }
-    data = api_request(payload, proxies_list)
+    data = api_request(payload)
     if not data or 'result' not in data or not data['result']:
         return None
 
@@ -118,7 +93,7 @@ def parse_transaction(signature, proxies_list, wallet_address):
     timestamp = tx['blockTime']
     date = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S") if timestamp else "N/A"
     
-    transfer_info = {"type": "Unknown", "amount": 0, "recipient": "N/A", "note": ""}
+    transfer_info = {"type": "Unknown", "amount": 0, "recipient": "N/A"}
     net_change_sol = 0
     net_changes_token = {}  # mint: delta
     if 'meta' in tx and 'preBalances' in tx['meta'] and 'postBalances' in tx['meta']:
@@ -134,7 +109,6 @@ def parse_transaction(signature, proxies_list, wallet_address):
                 delta = (post['uiTokenAmount']['uiAmount'] - pre['uiTokenAmount']['uiAmount'])
                 if delta != 0:
                     net_changes_token[mint] = delta
-                    transfer_info['note'] = "Token change noted"
 
     instructions = tx['transaction']['message']['instructions']
     for instr in instructions:
@@ -144,15 +118,13 @@ def parse_transaction(signature, proxies_list, wallet_address):
                 transfer_info = {
                     "type": "SOL Transfer",
                     "amount": info['lamports'] / 1_000_000_000,
-                    "recipient": info['destination'],
-                    "note": "SOL change noted" if net_change_sol != 0 else ""
+                    "recipient": info['destination']
                 }
             elif 'amount' in info and 'mint' in info:
                 transfer_info = {
                     "type": f"Token Transfer ({info['mint'][:8]}...)",
                     "amount": int(info['amount']) / (10 ** info.get('decimals', 9)),
-                    "recipient": info['destination'],
-                    "note": "Token change noted" if net_changes_token else ""
+                    "recipient": info['destination']
                 }
             break
     
@@ -174,29 +146,23 @@ def save_to_file(balance, token_balances, nfts, txs_data, wallet):
             f.write(f"  - {tx['date']}: {tx['type']}, Amount: {tx['amount']}, To: {tx['recipient']}, Net SOL Change: {tx['net_change_sol']}")
             for mint, delta in tx['net_changes_token'].items():
                 f.write(f", Token {mint[:8]} Change: {delta}")
-            f.write(f", Note: {tx['note']}\n")
+            f.write("\n")
         f.write("\n")
 
 # Streamlit UI
 st.title("🐶 Solana Wallet Tracker (Beagle Edition)")
-st.write("Track SOL, tokens, NFTs, and transactions with IP masking. Enter a wallet below!")
+st.write("Track SOL, tokens, NFTs, and transactions. Enter a wallet below!")
 
 wallet_input = st.text_input("Wallet Address", value=WALLET_ADDRESS, placeholder="Enter Solana wallet address")
 if wallet_input and len(wallet_input) not in [32, 44]:
     st.error("Invalid Solana wallet address (should be ~44 characters).")
 
-if 'proxies_list' not in st.session_state:
-    with st.spinner("Fetching proxies..."):
-        st.session_state.proxies_list = fetch_proxy_list()
-    if not st.session_state.proxies_list:
-        st.warning("No proxies available—running direct (no IP masking)")
-
 if st.button("Check Wallet Details", disabled=not wallet_input):
     with st.spinner("Fetching data..."):
-        balance = get_balance(wallet_input, st.session_state.proxies_list)
-        token_accounts = get_token_accounts(wallet_input, st.session_state.proxies_list)
+        balance = get_balance(wallet_input)
+        token_accounts = get_token_accounts(wallet_input)
         token_balances, nfts = get_token_balances(token_accounts)
-        txs = get_recent_transactions(wallet_input, st.session_state.proxies_list)
+        txs = get_recent_transactions(wallet_input)
         
         if balance is not None:
             st.success(f"**SOL Balance:** {balance:.9f} SOL")
@@ -215,7 +181,7 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
         if txs:
             st.subheader("Recent Transactions (Last 25):")
             for tx in txs:
-                parsed = parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input)
+                parsed = parse_transaction(tx['signature'], wallet_input)
                 if parsed and (parsed['amount'] > 0 or parsed['net_change_sol'] != 0 or parsed['net_changes_token']):
                     txs_data.append(parsed)
                 time.sleep(1)  # Delay to avoid rate limits
@@ -223,7 +189,7 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
             if txs_data:
                 df = pd.DataFrame(txs_data)
                 df['net_changes_token_str'] = df['net_changes_token'].apply(lambda d: ', '.join([f"{k[:8]}: {v}" for k,v in d.items()]) if d else '')
-                st.table(df[["date", "type", "amount", "recipient", "net_change_sol", "net_changes_token_str", "note"]])
+                st.table(df[["date", "type", "amount", "recipient", "net_change_sol", "net_changes_token_str"]])
         
         save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
 
@@ -231,10 +197,10 @@ if st.checkbox("Auto-refresh every 60s", disabled=not wallet_input):
     placeholder = st.empty()
     while True:
         with placeholder.container():
-            balance = get_balance(wallet_input, st.session_state.proxies_list)
-            token_accounts = get_token_accounts(wallet_input, st.session_state.proxies_list)
+            balance = get_balance(wallet_input)
+            token_accounts = get_token_accounts(wallet_input)
             token_balances, nfts = get_token_balances(token_accounts)
-            txs = get_recent_transactions(wallet_input, st.session_state.proxies_list)
+            txs = get_recent_transactions(wallet_input)
             
             if balance is not None:
                 st.metric("SOL Balance", f"{balance:.9f}")
@@ -249,14 +215,14 @@ if st.checkbox("Auto-refresh every 60s", disabled=not wallet_input):
             
             txs_data = []
             if txs:
-                txs_data = [parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input) for tx in txs if parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input)]
+                txs_data = [parse_transaction(tx['signature'], wallet_input) for tx in txs if parse_transaction(tx['signature'], wallet_input)]
                 txs_data = [tx for tx in txs_data if tx['amount'] > 0 or tx['net_change_sol'] != 0 or tx['net_changes_token']]
                 if txs_data:
                     df = pd.DataFrame(txs_data)
                     df['net_changes_token_str'] = df['net_changes_token'].apply(lambda d: ', '.join([f"{k[:8]}: {v}" for k,v in d.items()]) if d else '')
-                    st.table(df[["date", "type", "amount", "recipient", "net_change_sol", "net_changes_token_str", "note"]])
+                    st.table(df[["date", "type", "amount", "recipient", "net_change_sol", "net_changes_token_str"]])
                 save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
         time.sleep(CHECK_INTERVAL)
         st.rerun()
 
-st.info("💡 Proxies rotate for privacy. Results saved to wallet_history.txt. Built for #BeagleLife! 🚀")
+st.info("💡 Results saved to wallet_history.txt. Built for #BeagleLife! 🚀")
