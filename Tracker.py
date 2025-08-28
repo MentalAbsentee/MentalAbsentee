@@ -162,23 +162,19 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
         txs_data = []
         if txs:
             st.subheader("Recent Transactions (Last 25):")
+            change_list = []
             for i, tx in enumerate(txs):
                 parsed = parse_transaction(tx['signature'], wallet_input)
                 if parsed and parsed['changes']:
                     parsed['number'] = i + 1
                     txs_data.append(parsed)
-                time.sleep(5)  # Delay for rate limits
-                # Update display progressively
-                current_df = pd.DataFrame([t for t in txs_data if t['changes']])
-                if not current_df.empty:
-                    change_list = []
-                    for _, row in current_df.iterrows():
-                        for change in row['changes']:
-                            change['number'] = row['number']
-                            change['date'] = row['date']
-                            change['signature'] = row['signature']
-                            change_list.append(change)
+                    for change in parsed['changes']:
+                        change['number'] = parsed['number']
+                        change['date'] = parsed['date']
+                        change['signature'] = parsed['signature']
+                        change_list.append(change)
                     st.table(pd.DataFrame(change_list)[["number", "date", "signature", "mint", "amount", "decimals"]])
+                time.sleep(5)  # Delay for rate limits
         
         save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
 
@@ -204,15 +200,17 @@ if st.checkbox("Auto-refresh every 60s", disabled=not wallet_input):
             
             txs_data = []
             if txs:
-                txs_data = [parse_transaction(tx['signature'], wallet_input) for tx in txs if parse_transaction(tx['signature'], wallet_input) and parse_transaction(tx['signature'], wallet_input)['changes']]
-                if txs_data:
-                    change_list = []
-                    for idx, tx in enumerate(txs_data, 1):
-                        for change in tx['changes']:
+                change_list = []
+                for idx, tx in enumerate(txs, 1):
+                    parsed = parse_transaction(tx['signature'], wallet_input)
+                    if parsed and parsed['changes']:
+                        txs_data.append(parsed)
+                        for change in parsed['changes']:
                             change['number'] = idx
-                            change['date'] = tx['date']
-                            change['signature'] = tx['signature']
+                            change['date'] = parsed['date']
+                            change['signature'] = parsed['signature']
                             change_list.append(change)
+                if change_list:
                     st.table(pd.DataFrame(change_list)[["number", "date", "signature", "mint", "amount", "decimals"]])
                 save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
         time.sleep(CHECK_INTERVAL)
