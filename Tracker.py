@@ -21,7 +21,7 @@ def api_request(payload, retries=2):
         except requests.exceptions.RequestException as e:
             st.warning(f"Request failed (attempt {attempt + 1}): {e}")
             if attempt < retries:
-                time.sleep(2)
+                time.sleep(5)  # Increased delay for rate limits
     return None
 
 def get_balance(address):
@@ -184,7 +184,7 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
                 parsed = parse_transaction(tx['signature'], wallet_input)
                 if parsed and (parsed['amount'] > 0 or parsed['net_change_sol'] != 0 or parsed['net_changes_token']):
                     txs_data.append(parsed)
-                time.sleep(1)  # Delay to avoid rate limits
+                time.sleep(3)  # Increased delay for rate limits
         
             if txs_data:
                 df = pd.DataFrame(txs_data)
