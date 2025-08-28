@@ -205,9 +205,9 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
             nft_df = pd.DataFrame(nfts)
             st.table(nft_df)
         
+        txs_data = []
         if txs:
             st.subheader("Recent Transactions (Last 25):")
-            txs_data = []
             for tx in txs:
                 parsed = parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input)
                 if parsed:
@@ -216,7 +216,7 @@ if st.button("Check Wallet Details", disabled=not wallet_input):
         
             if txs_data:
                 df = pd.DataFrame(txs_data)
-                df['net_changes_token_str'] = df['net_changes_token'].apply(lambda d: ', '.join([f"{k[:8]}: {v}" for k,v in d.items()]))
+                df['net_changes_token_str'] = df['net_changes_token'].apply(lambda d: ', '.join([f"{k[:8]}: {v}" for k,v in d.items()]) if d else '')
                 st.table(df[["date", "type", "amount", "recipient", "net_change_sol", "net_changes_token_str"]])
         
         save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
@@ -241,12 +241,12 @@ if st.checkbox("Auto-refresh every 60s", disabled=not wallet_input):
                 nft_df = pd.DataFrame(nfts)
                 st.table(nft_df)
             
+            txs_data = []
             if txs:
-                txs_data = [parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input) for tx in txs]
-                txs_data = [tx for tx in txs_data if tx]
+                txs_data = [parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input) for tx in txs if parse_transaction(tx['signature'], st.session_state.proxies_list, wallet_input)]
                 if txs_data:
                     df = pd.DataFrame(txs_data)
-                    df['net_changes_token_str'] = df['net_changes_token'].apply(lambda d: ', '.join([f"{k[:8]}: {v}" for k,v in d.items()]))
+                    df['net_changes_token_str'] = df['net_changes_token'].apply(lambda d: ', '.join([f"{k[:8]}: {v}" for k,v in d.items()]) if d else '')
                     st.table(df[["date", "type", "amount", "recipient", "net_change_sol", "net_changes_token_str"]])
                 save_to_file(balance if balance is not None else "N/A", token_balances, nfts, txs_data, wallet_input)
         time.sleep(CHECK_INTERVAL)
